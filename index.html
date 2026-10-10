@@ -1,0 +1,267 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GD Analysis Dashboard</title>
+<style>
+body{margin:0;font:14px/1.5 'Segoe UI',system-ui,sans-serif;background:#f2f4fb;color:#1b2236}
+header{background:linear-gradient(120deg,#1e1b4b,#4f46e5);color:#fff;padding:14px 22px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+h1{margin:0;font-size:1.4em}main{padding:14px 22px;max-width:1700px;margin:auto}
+.card{background:#fff;border:1px solid #e6eaf3;border-radius:12px;padding:14px;margin-bottom:12px}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+.slot{background:#f8f9fe;border:1px dashed #a5b4fc;border-radius:10px;padding:10px}
+.mut{color:#6c768c}.ok{color:#16a34a}.bad{color:#dc2626}.warn{color:#d97706}
+button,select,input[type=text]{font:inherit;border:1px solid #d5dbec;border-radius:8px;padding:6px 10px;background:#fff}
+button.b{background:#4f46e5;color:#fff;border:0;cursor:pointer}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.tabs button{border-radius:999px;cursor:pointer}.tabs button.on{background:#4f46e5;color:#fff}
+.wrap{overflow:auto;max-height:70vh;border:1px solid #e6eaf3;border-radius:10px;margin:6px 0 16px;background:#fff}
+table{border-collapse:separate;border-spacing:0;font-size:.92em;width:100%}
+th,td{padding:6px 10px;text-align:right;white-space:nowrap;border-bottom:1px solid #eef0f6}
+th{position:sticky;top:0;background:#e9edfa;z-index:2}
+td:first-child,th:first-child{position:sticky;left:0;text-align:left;font-weight:600;background:#fff;z-index:1}th:first-child{background:#e9edfa;z-index:3}
+tr.tot td{font-weight:700;background:#eef1fa;position:sticky;bottom:0}
+.up{color:#16a34a;font-weight:700}.dn{color:#dc2626;font-weight:700}
+.map{display:grid;grid-template-columns:140px 1fr;gap:4px 8px;margin-top:6px;align-items:center;font-size:.88em}
+#cl{width:100%;height:150px}.flt{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+</style></head><body>
+<header><div><h1>GD Analysis Dashboard</h1><small>ROAV + Orders · hour, city, state, platform</small></div><div>🔒 Data is processed in your browser only</div></header>
+<main>
+<div class="card"><b>Upload CSVs</b> <span class="mut">(any one file alone is fine; yesterday / 2 days ago are optional)</span>
+<div class="g" id="slots" style="margin-top:8px"></div><div class="g" id="maps"></div><div id="chk" style="margin-top:8px"></div></div>
+<div class="card"><div class="flt">
+<div><label>Day shown in tabs</label><br><select id="dsel"></select></div>
+<label><input type="checkbox" id="dd"> Count each Product / Booking ID only once per hour (untick = count every CSV row)</label>
+<div style="flex:1;min-width:260px"><label>City filter — search, Ctrl+click for several</label><br><input type="text" id="cs" placeholder="Search city…" style="width:100%;margin-bottom:4px"><select id="cl" multiple></select>
+<button id="ca">Select all shown</button> <button id="cx">Clear (= all cities)</button> <span id="cn" class="mut"></span></div>
+<button class="b" id="ex">⬇ Export Excel</button></div></div>
+<div class="tabs" id="tabs"></div><div id="out"></div>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<script>
+"use strict";
+/* ===== EDIT THESE LISTS if your statuses change (matching ignores case/extra spaces) ===== */
+const PENDING=['Pending','Pending Payment','Folloup Pending','Followup Pending'];
+const BOOKED=['Processing','Payment Received','Enquiry Sent','Complete_All','Complete With SMS','Complete With Email','Complete Cancel','Complete','Cancelled due to Booking not available','Completed with NEFT','Payment Initiation'];
+/* ROAV reason rules: contains ABD / OPT as a word; Blocking or No Inventory = Blocking; Book Now */
+const $=id=>document.getElementById(id),pad=n=>String(n).padStart(2,'0');
+const HL=h=>String(h),HRS=[...Array(24).keys()];
+const nm=s=>String(s??'').trim().toLowerCase().replace(/\s+/g,' ');
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=n=>Math.round(n).toLocaleString('en-IN'),P=(a,b)=>b?a/b*100:null;
+const PE=new Set(PENDING.map(nm)),BK=new Set(BOOKED.map(nm));
+const w=x=>new RegExp('(^|[^a-z])'+x+'([^a-z]|$)');const RA=w('abd'),RO=w('opt');
+function kR(t){t=nm(t);if(/blocking|no[\s_-]*inventory/.test(t))return'bl';if(RA.test(t))return'abd';if(RO.test(t))return'opt';if(/book[\s_-]*now/.test(t))return'bn';return'ot'}
+function parseCSV(t){if(t.charCodeAt(0)===0xFEFF)t=t.slice(1);const rows=[];let r=[],f='',q=false,i=0;const n=t.length;
+ while(i<n){const c=t[i];if(q){if(c==='"'){if(t[i+1]==='"'){f+='"';i++}else q=false}else f+=c}
+ else if(c==='"')q=true;else if(c===','){r.push(f);f=''}
+ else if(c==='\n'||c==='\r'){if(c==='\r'&&t[i+1]==='\n')i++;r.push(f);f='';if(r.length>1||r[0]!=='')rows.push(r);r=[]}else f+=c;i++}
+ if(f!==''||r.length){r.push(f);rows.push(r)}return rows}
+const MON=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+function parseDT(v){let s=String(v??'').replace(/\u00a0/g,' ').trim();if(!s)return null;let m,d,mo,y,h,mi,se,ap;
+ if(/^\d{5}(\.\d+)?$/.test(s)){const n=parseFloat(s),t=Math.round((n-Math.floor(n))*86400);return{h:Math.floor(t/3600)%24,mi:Math.floor(t%3600/60),se:t%60,key:Math.floor(n),lab:'Day '+Math.floor(n)}}
+ if((m=s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})[ T,]+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?(?:\.\d+)?\s*([AaPp][Mm])?/))){d=+m[1];mo=+m[2];y=+m[3];if(y<100)y+=2000;h=+m[4];mi=+m[5];se=+(m[6]||0);ap=m[7]}
+ else if((m=s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?/))){y=+m[1];mo=+m[2];d=+m[3];h=+m[4];mi=+m[5];se=+(m[6]||0);ap=m[7]}
+ else if((m=s.match(/^(\d{1,2})[ ,-]+([A-Za-z]{3,9})[ ,-]+(\d{4})[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?/))&&(mo=MON.indexOf(m[2].slice(0,3).toLowerCase())+1)){d=+m[1];y=+m[3];h=+m[4];mi=+m[5];se=+(m[6]||0);ap=m[7]}
+ else return null;
+ if(ap){ap=ap.toLowerCase();if(h<1||h>12)return null;if(ap==='pm'&&h<12)h+=12;if(ap==='am'&&h===12)h=0}
+ if(h>23||mi>59||se>59||mo<1||mo>12||d<1||d>31)return null;
+ return{h,mi,se,key:y*10000+mo*100+d,lab:pad(d)+'-'+pad(mo)+'-'+y}}
+
+/* ===== state ===== */
+const DN=['Today','Yesterday','2 Days Ago'];
+const FLD={R:[['date','Date & time',1],['id','Product ID',0],['reason','Reason',1],['city','City',1]],
+ O:[['date','Date & time',1],['id','Booking ID',0],['status','Status',1],['city','City (optional)',0],['ps','Product State',0],['cs','State (customer)',0],['pl','Platform',0]]};
+const AD=['last update','last updated','updated at','booked on','booking date','order date','created at','created on','date','timestamp'];
+const AL={date:AD,id:{R:['product id','productid','product_id'],O:['booking id','bookingid','booking_id','order id']},reason:['reason','roav reason'],city:['city','city name','product city'],status:['status','order status','booking status'],ps:['product state'],cs:['state','customer state'],pl:['platform','booking platform','source']};
+const al=(k,f)=>{const a=AL[f];return Array.isArray(a)?a:a[k]};
+const F={R:[null,null,null],O:[null,null,null]},D={R:[null,null,null],O:[null,null,null]},MH={},MAP={},LBL={},CN=new Map();
+let CS=new Set(),info={},day=0,cur=0,VIS=[];const V={xm:'r',cm:'r',cd:'h',sm:'bk'};
+const auto=(k,hd)=>{const m={};FLD[k].forEach(([f])=>m[f]=hd.findIndex(h=>al(k,f).includes(nm(h))));return m};
+const cm=(k,hd)=>{const m={};FLD[k].forEach(([f])=>{const s=MAP[k][f];m[f]=s>=0?hd.findIndex(h=>nm(h)===nm(MH[k][s])):-1});return m};
+const grp=(a,f)=>{const m=new Map();a.forEach(x=>{const k=f(x);(m.get(k)||m.set(k,[]).get(k)).push(x)});return m};
+const g2=(rs,os,f)=>{const m=new Map(),g=k=>m.get(k)||m.set(k,{r:[],o:[]}).get(k);rs.forEach(x=>g(f(x)).r.push(x));os.forEach(x=>g(f(x)).o.push(x));return m};
+function S(rs,os){const s={r:rs.length,abd:0,opt:0,bl:0,bn:0,ot:0,o:os.length,pe:0,bk:0,oo:0};rs.forEach(x=>{if(s[x.k]!==undefined)s[x.k]++});os.forEach(x=>{if(x.k==='pe')s.pe++;else if(x.k==='bk')s.bk++;else s.oo++});return s}
+/* [id,label,fn,isPercent,side] */
+const MET=[['r','ROAV',s=>s.r,0,'R'],['abd','ABD',s=>s.abd,0,'R'],['abdp','ABD %',s=>P(s.abd,s.r),1,'R'],['opt','OPT',s=>s.opt,0,'R'],['optp','OPT %',s=>P(s.opt,s.r),1,'R'],
+['bl','Blocking + No Inventory',s=>s.bl,0,'R'],['blp','Blocking %',s=>P(s.bl,s.r),1,'R'],['bn','Book Now',s=>s.bn,0,'R'],['bnp','Book Now %',s=>P(s.bn,s.r),1,'R'],['ot','Other reasons (in no group)',s=>s.ot,0,'R'],
+['o','Orders',s=>s.o,0,'O'],['bno','Book Now → Order %',s=>P(s.o,s.bn),1,'B'],['pe','Pending',s=>s.pe,0,'O'],['bk','Booked',s=>s.bk,0,'O'],['oo','Other status (in no group)',s=>s.oo,0,'O'],['obk','Order → Booked %',s=>P(s.bk,s.o),1,'O']];
+const MR=['r','abd','abdp','opt','optp','bl','blp','bn','bnp','ot'];
+const val=(m,s,hr,ho)=>(m[4]==='R'&&!hr)||(m[4]==='O'&&!ho)||(m[4]==='B'&&!(hr&&ho))?null:m[2](s);
+const show=(m,v)=>v==null?'-':m[3]?v.toFixed(1)+'%':fmt(v);
+const lb=i=>LBL['R'+i]||LBL['O'+i]||'';
+
+/* ===== load + prepare ===== */
+function rd(file,ok,bad){const fr=new FileReader();fr.onload=()=>setTimeout(()=>{try{const r=parseCSV(fr.result);if(r.length<2)throw new Error('No data rows');ok({name:file.name,hd:r[0].map(x=>x.trim()),rows:r.slice(1)})}catch(e){bad(e.message)}},10);fr.onerror=()=>bad('Could not read file');fr.readAsText(file)}
+const DSEL={};
+function prep(k,i,raw,m){const q={n:raw.rows.length,bad:0,other:0,rep:0,ded:0,key:null,unc:new Map(),dates:new Map(),labs:new Set()},out=new Map(),lst=[],seen=new Set(),dd=$('dd').checked,ds=DSEL[k+i]||'',g=(r,j)=>j>=0?String(r[j]??'').trim():'';let fk=null;
+ raw.rows.forEach(r=>{const dt=parseDT(r[m.date]);if(!dt){q.bad++;return}q.dates.set(dt.lab,(q.dates.get(dt.lab)||0)+1);
+  if(ds&&dt.lab!==ds){q.other++;return}q.labs.add(dt.lab);fk=dt.key;
+  const ct=g(r,m.city),c=nm(ct)||'(no city)';if(!CN.has(c))CN.set(c,ct||'(No city)');
+  const t=g(r,k==='R'?m.reason:m.status);let kk;
+  if(k==='R')kk=kR(t);else{const n=nm(t);kk=PE.has(n)?'pe':BK.has(n)?'bk':'ot'}
+  if(kk==='ot'){const u=t||'(empty)';q.unc.set(u,(q.unc.get(u)||0)+1)}
+  const x={h:dt.h,t:dt.h*3600+dt.mi*60+dt.se,c,k:kk,ps:g(r,m.ps)||'(blank)',cs:g(r,m.cs)||'(blank)',pl:g(r,m.pl)||'(blank)'},id=g(r,m.id);
+  if(id){const sk=dt.key+'|'+id;if(seen.has(sk))q.rep++;else seen.add(sk)}
+  if(dd&&id){const key=dt.key+'|'+dt.h+'|'+id,o=out.get(key);if(o)q.ded++;if(!o||x.t>=o.t)out.set(key,x)}else lst.push(x)});
+ const recs=[...out.values(),...lst];q.used=recs.length;q.lab=[...q.labs].slice(0,3).join(', ');if(q.labs.size===1)q.key=fk;return{recs,q}}
+function proc(){info={};['R','O'].forEach(k=>[0,1,2].forEach(i=>{D[k][i]=null;const raw=F[k][i];if(!raw||!MH[k])return;const m=cm(k,raw.hd),ms=FLD[k].filter(f=>f[2]&&m[f[0]]<0);
+ if(ms.length){info[k+i]={err:'Columns not found: '+ms.map(f=>f[1]).join(', ')};return}const p=prep(k,i,raw,m);D[k][i]=p.recs;info[k+i]=p.q;LBL[k+i]=p.q.lab}));
+ if(!D.R[day]&&!D.O[day]){const d=[0,1,2].find(i=>D.R[i]||D.O[i]);if(d!==undefined)day=d}
+ drawChk();drawCities();drawDay();render()}
+const fR=i=>D.R[i]?(CS.size?D.R[i].filter(x=>CS.has(x.c)):D.R[i]):null;
+const fO=i=>D.O[i]?(CS.size&&MAP.O.city>=0?D.O[i].filter(x=>CS.has(x.c)):D.O[i]):null;
+
+/* ===== upload UI ===== */
+$('slots').innerHTML=['R','O'].map(k=>[0,1,2].map(i=>'<div class="slot"><b>'+(k==='R'?'ROAV':'Order')+' — '+DN[i]+'</b><br><input type="file" accept=".csv,text/csv" data-k="'+k+'" data-i="'+i+'"><div id="st'+k+i+'" class="mut">Not loaded</div></div>').join('')).join('');
+function drawMaps(){$('maps').innerHTML=['R','O'].filter(k=>MH[k]).map(k=>'<div><b>'+(k==='R'?'ROAV':'Order')+' columns</b> <span class="mut">(* required; guessed from names)</span><div class="map">'+FLD[k].map(([f,l,r])=>'<label>'+l+(r?' *':'')+'</label><select data-k="'+k+'" data-m="'+f+'"><option value="-1">— not used —</option>'+MH[k].map((h,i)=>'<option value="'+i+'"'+(MAP[k][f]===i?' selected':'')+'>'+esc(h)+'</option>').join('')+'</select>').join('')+'</div></div>').join('')}
+function drawChk(){const L=[],v=x=>info[x]&&!info[x].err?info[x]:null;
+ Object.entries(info).forEach(([k,q])=>{const n='<b>'+(k[0]==='R'?'ROAV':'Order')+' · '+DN[+k[1]]+'</b>';if(q.err){L.push('<div class="bad">'+n+': '+esc(q.err)+'</div>');return}
+  const ok=q.n===q.used+q.bad+q.other+q.ded;
+  let h='<div>'+n+': '+fmt(q.n)+' rows = counted <b>'+fmt(q.used)+'</b>'+(q.ded?' + '+fmt(q.ded)+' repeated IDs ignored':'')+(q.bad?' + <span class="bad">'+fmt(q.bad)+' skipped (date not understood)</span>':'')+(q.other?' + '+fmt(q.other)+' rows of other dates':'')+(ok?' <span class="ok">✔ adds up</span>':' <span class="bad">✖ does not add up</span>')+' · date: '+esc(q.lab||'-');
+  if(q.dates.size>1)h+='<br><span class="warn">⚠ this file has '+q.dates.size+' different dates, so hours are mixed. Use only: </span><select data-ds="'+k+'"><option value="">All dates (mixed)</option>'+[...q.dates].map(([l,c])=>'<option value="'+esc(l)+'"'+(DSEL[k]===l?' selected':'')+'>'+esc(l)+' ('+fmt(c)+' rows)</option>').join('')+'</select>';
+  if(q.rep&&!$('dd').checked)h+='<br><span class="warn">'+fmt(q.rep)+' rows repeat an ID already seen on the same date. Every row is counted; tick “only once per hour” above to ignore repeats inside the same hour.</span>';
+  if(q.unc.size)h+='<br><span class="warn">'+(k[0]==='R'?'Reasons':'Statuses')+' in no group (shown in the “Other” column): '+[...q.unc].sort((a,b)=>b[1]-a[1]).slice(0,6).map(x=>esc(x[0])+' ('+fmt(x[1])+')').join(', ')+'</span>';
+  L.push(h+'</div>')});
+ ['R','O'].forEach(k=>[[0,1],[0,2],[1,2]].forEach(([a,b])=>{const A=v(k+a),B=v(k+b);if(A&&B&&A.key&&B.key){if(A.key===B.key)L.push('<div class="bad">⚠ '+(k==='R'?'ROAV':'Order')+' '+DN[a]+' and '+DN[b]+' files have the same date ('+esc(A.lab)+') — wrong file in a slot?</div>');else if(A.key<B.key)L.push('<div class="bad">⚠ '+(k==='R'?'ROAV':'Order')+' '+DN[a]+' ('+esc(A.lab)+') is older than '+DN[b]+' ('+esc(B.lab)+') — slots swapped?</div>')}}));
+ [0,1,2].forEach(i=>{const A=v('R'+i),B=v('O'+i);if(A&&B&&A.key&&B.key&&A.key!==B.key)L.push('<div class="bad">⚠ ROAV and Order files for '+DN[i]+' have different dates ('+esc(A.lab)+' vs '+esc(B.lab)+')</div>')});
+ $('chk').innerHTML=L.join('')}
+function drawDay(){const ds=[0,1,2].filter(i=>D.R[i]||D.O[i]);$('dsel').innerHTML=ds.map(i=>'<option value="'+i+'"'+(i===day?' selected':'')+'>'+DN[i]+(lb(i)?' ('+esc(lb(i))+')':'')+'</option>').join('')||'<option>—</option>'}
+function drawCities(){const q=$('cs').value.toLowerCase(),all=[...CN].sort((a,b)=>a[1].localeCompare(b[1])).filter(([k,v])=>v.toLowerCase().includes(q)||CS.has(k));VIS=all.map(x=>x[0]);
+ $('cl').innerHTML=all.map(([k,v])=>'<option value="'+esc(k)+'"'+(CS.has(k)?' selected':'')+'>'+esc(v)+'</option>').join('');cnt()}
+const cnt=()=>$('cn').textContent=CS.size?CS.size+' city selected':'All cities';
+
+/* ===== tables ===== */
+function T(head,rows,tot){return'<div class="wrap"><table><thead><tr>'+head.map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>').join('')+(tot?'<tr class="tot">'+tot.map(c=>'<td>'+c+'</td>').join('')+'</tr>':'')+'</tbody></table></div>'}
+const empty=t=>'<div class="card">⬆ Upload the '+t+' CSV for the selected day to see this.</div>';
+const sel=(o,cur,c)=>'<select data-c="'+c+'">'+o.map(x=>'<option value="'+x[0]+'"'+(x[0]===cur?' selected':'')+'>'+esc(x[1])+'</option>').join('')+'</select>';
+const dl=()=>' <span class="mut">'+DN[day]+(lb(day)?' · '+esc(lb(day)):'')+'</span>';
+const mz=(m,v)=>v==null||v===0?'·':show(m,v);
+
+function t0(){const rs=fR(day);if(!rs)return empty('ROAV');const M=MET.filter(m=>MR.includes(m[0])),row=(l,a)=>{const s=S(a,[]);return[esc(l),...M.map(m=>show(m,m[2](s)))]};
+ const gh=grp(rs,x=>x.h),gc=grp(rs,x=>x.c),hd=['',...M.map(m=>m[1])],cs=[...gc.keys()].sort((a,b)=>gc.get(b).length-gc.get(a).length);
+ const mm=MET.find(m=>m[0]===V.xm),tt=a=>show(mm,mm[2](S(a,[])));
+ return'<div class="card"><h3>Hour-wise ROAV'+dl()+'</h3>'+T(['Hour',...hd.slice(1)],HRS.map(h=>row(HL(h),gh.get(h)||[])),row('Total',rs))+
+ '<h3>City-wise ROAV'+dl()+'</h3>'+T(['City',...hd.slice(1)],cs.map(c=>row(CN.get(c),gc.get(c))),row('Total',rs))+
+ '<h3>City × Hour — '+sel(MET.filter(m=>MR.includes(m[0])).map(m=>[m[0],m[1]]),V.xm,'xm')+dl()+'</h3>'+
+ T(['City ↓ / Hour →',...HRS.map(HL),'Total'],cs.map(c=>{const g=grp(gc.get(c),x=>x.h);return[esc(CN.get(c)),...HRS.map(h=>g.has(h)?show(mm,mm[2](S(g.get(h),[]))):'·'),tt(gc.get(c))]}),['Total',...HRS.map(h=>gh.has(h)?tt(gh.get(h)):'·'),tt(rs)])+'</div>'}
+
+function chg(a,b,m){if(a==null||b==null)return'-';const d=m[3]?a-b:(b?(a-b)/b*100:(a?Infinity:0));if(d===0)return'0';const up=d>0,good=up!==['bl','blp','pe','ot','oo'].includes(m[0]);
+ const t=d===Infinity?'new':(up?'+':'')+d.toFixed(m[3]?1:0)+(m[3]?' pp':'%');return'<span class="'+(good?'up':'dn')+'">'+(up?'▲ ':'▼ ')+t+'</span>'}
+function t1(){const idx=[0,1,2].filter(i=>D.R[i]||D.O[i]);if(!idx.length)return empty('ROAV / Order');
+ const m=MET.find(x=>x[0]===V.cm),dim=V.cd,SP='\u0001',kf=dim==='h'?x=>x.h:dim==='c'?x=>x.c:x=>x.c+SP+x.h;
+ const G=idx.map(i=>({g:g2(fR(i)||[],fO(i)||[],kf),hr:!!D.R[i],ho:!!D.O[i],i})),keys=new Set();G.forEach(x=>x.g.forEach((_,k)=>keys.add(k)));
+ let ks=dim==='h'?HRS:[...keys];if(dim==='c')ks.sort((a,b)=>CN.get(a).localeCompare(CN.get(b)));
+ if(dim==='ch')ks.sort((a,b)=>{const[c1,h1]=a.split(SP),[c2,h2]=b.split(SP);return CN.get(c1).localeCompare(CN.get(c2))||h1-h2});
+ const v=ks.map(k=>({k,v:G.map(x=>{const g=x.g.get(k)||{r:[],o:[]};return val(m,S(g.r,g.o),x.hr,x.ho)})})).filter(r=>dim==='h'||r.v.some(z=>z));
+ const hasT=idx[0]===0,ch=hasT?idx.slice(1):[];
+ const lab=k=>dim==='h'?[HL(k)]:dim==='c'?[esc(CN.get(k))]:(([c,h])=>[esc(CN.get(c)),HL(+h)])(k.split(SP));
+ const tv=G.map(x=>val(m,S(fR(x.i)||[],fO(x.i)||[]),x.hr,x.ho));
+ const row=(l,a)=>[...l,...a.map(z=>show(m,z)),...(hasT?ch.map(i=>chg(a[0],a[idx.indexOf(i)],m)):[])];
+ const head=[...(dim==='h'?['Hour']:dim==='c'?['City']:['City','Hour']),...idx.map(i=>DN[i]),...ch.map(i=>'Today vs '+DN[i])];
+ return'<div class="card"><div class="flt"><div><label>Compare</label><br>'+sel(MET.map(x=>[x[0],x[1]]),V.cm,'cm')+'</div><div><label>By</label><br>'+sel([['h','Hour-wise'],['c','City-wise'],['ch','City + Hour']],V.cd,'cd')+'</div></div>'+
+ (hasT?'':'<p class="warn">Today file not loaded — no change columns.</p>')+T(head,v.map(r=>row(lab(r.k),r.v)),row(dim==='ch'?['Total','']:['Total'],tv))+'</div>'}
+
+function t2(){const os=fO(day);if(!os)return empty('Order');const gh=grp(os,x=>x.h),row=(l,a)=>{const s=S([],a);return[l,fmt(s.o),fmt(s.pe),fmt(s.bk),fmt(s.oo),(v=>v==null?'-':v.toFixed(1)+'%')(P(s.bk,s.o))]};
+ return'<div class="card"><h3>Orders by hour — Pending vs Booked'+dl()+'</h3>'+T(['Hour','Orders','Pending','Booked','Other status','Order → Booked %'],HRS.map(h=>row(HL(h),gh.get(h)||[])),row('Total',os))+'</div>'}
+function t3(){const os=fO(day);if(!os)return empty('Order');if(MAP.O.ps<0||MAP.O.cs<0)return'<div class="card bad">Choose the Product State and State columns in the Order column list above.</div>';
+ const a=V.sm==='bk'?os.filter(x=>x.k==='bk'):os,pm=new Map(),ct=new Map();
+ a.forEach(x=>{const r=pm.get(x.ps)||pm.set(x.ps,new Map()).get(x.ps);r.set(x.cs,(r.get(x.cs)||0)+1);ct.set(x.cs,(ct.get(x.cs)||0)+1)});
+ const cols=[...ct.keys()].sort((a,b)=>ct.get(b)-ct.get(a)),tot=r=>[...r.values()].reduce((s,z)=>s+z,0),rows=[...pm].sort((a,b)=>tot(b[1])-tot(a[1]));
+ return'<div class="card"><h3>Product State (where booked) × State (customer home)'+dl()+'</h3><div class="flt">'+sel([['bk','Booked orders only'],['all','All orders']],V.sm,'sm')+'</div>'+
+ T(['Product State ↓ / Customer State →',...cols.map(esc),'Total'],rows.map(([p,r])=>[esc(p),...cols.map(c=>r.get(c)||'·'),tot(r)]),['Total',...cols.map(c=>ct.get(c)),a.length])+'</div>'}
+function t4(){const os=fO(day);if(!os)return empty('Order');if(MAP.O.pl<0)return'<div class="card bad">Choose the Platform column in the Order column list above.</div>';
+ const g=[...grp(os,x=>x.pl)].sort((a,b)=>b[1].length-a[1].length),row=(l,a)=>{const s=S([],a);return[esc(l),fmt(s.o),fmt(s.bk),fmt(s.pe),(P(s.o,os.length)||0).toFixed(1)+'%']};
+ return'<div class="card"><h3>Orders by platform'+dl()+'</h3>'+T(['Platform','Orders','Booked','Pending','Share of orders'],g.map(([p,a])=>row(p,a)),row('Total',os))+'</div>'}
+function t5(){const ds=[0,1,2].filter(i=>D.R[i]||D.O[i]);if(!ds.length)return empty('ROAV / Order');
+ return ds.map(i=>{const rs=fR(i)||[],os=fO(i)||[],hr=!!D.R[i],ho=!!D.O[i],g=g2(rs,os,x=>x.h),row=(l,r,o)=>{const s=S(r,o);return[l,...MET.map(m=>show(m,val(m,s,hr,ho)))]};
+  return'<div class="card"><h3>'+DN[i]+' <span class="mut">'+esc(lb(i))+'</span></h3>'+T(['Hour',...MET.map(m=>m[1])],HRS.map(h=>{const x=g.get(h)||{r:[],o:[]};return row(HL(h),x.r,x.o)}),row('Total',rs,os))+'</div>'}).join('')}
+const TABS=[['📊 ROAV (hour · city · city×hour)',t0],['🔁 Compare days',t1],['📦 Orders by hour',t2],['🗺 State × State',t3],['📱 Platform',t4],['⭐ Main Analysis',t5]];
+function render(){$('tabs').innerHTML=TABS.map((t,i)=>'<button data-t="'+i+'"'+(i===cur?' class="on"':'')+'>'+t[0]+'</button>').join('');$('out').innerHTML=TABS[cur][1]()}
+
+/* ===== Excel export (styled with ExcelJS) ===== */
+const HX={r:'BFDBFE',abd:'BBF7D0',abdp:'BBF7D0',opt:'FDE68A',optp:'FDE68A',bl:'FECACA',blp:'FECACA',bn:'A5F3FC',bnp:'A5F3FC',ot:'E2E8F0',o:'DDD6FE',bno:'DDD6FE',pe:'FED7AA',bk:'99F6E4',oo:'E2E8F0',obk:'99F6E4'};
+const tint=(h,a)=>'FF'+[0,2,4].map(i=>Math.round(parseInt(h.substr(i,2),16)*(1-a)+255*a).toString(16).padStart(2,'0')).join('').toUpperCase();
+const solid=c=>({type:'pattern',pattern:'solid',fgColor:{argb:c}});
+const BD={style:'thin',color:{argb:'FFD2D8EA'}},BR={top:BD,left:BD,bottom:BD,right:BD};
+const FC='#,##0;-#,##0;0',FZ='#,##0;-#,##0;"–"',FP='0.0%',PCF='"▲ "0.0%;"▼ "0.0%;0.0%',PPF='"▲ "0.0" pp";"▼ "0.0" pp";0.0" pp"';
+const LD=i=>DN[i]+(lb(i)?' ('+lb(i)+')':'');
+function xTitle(ws,r,text,n){ws.mergeCells(r,1,r,Math.max(n,8));const c=ws.getCell(r,1);c.value=text;c.font={bold:true,size:13,color:{argb:'FFFFFFFF'}};c.fill=solid('FF312E81');c.alignment={vertical:'middle',indent:1};ws.getRow(r).height=28}
+function xHead(ws,r,heads){heads.forEach((h,i)=>{const c=ws.getCell(r,i+1);c.value=h.t;c.font={bold:true,color:{argb:i?'FF1B2236':'FFFFFFFF'}};c.fill=solid(i?'FF'+(h.hex||'C7D2FE'):'FF4F46E5');c.alignment={horizontal:'center',vertical:'middle',wrapText:true};c.border=BR});ws.getRow(r).height=36}
+function xBlock(ws,r,title,heads,rows,o={}){const n=heads.length;xTitle(ws,r,title,n);r++;xHead(ws,r,heads);const hr=r;r++;const all=o.tot?[...rows,o.tot]:rows;
+ all.forEach((row,ri)=>{const T=o.tot&&ri===rows.length;row.forEach((v,i)=>{const c=ws.getCell(r,i+1),h=heads[i];c.value=v===null||v===undefined?'':v;c.border=BR;
+  if(i===0){c.font={bold:true};c.alignment={horizontal:'left',indent:1};c.fill=solid(T?'FFC7D2FE':'FFEEF1FA')}
+  else{c.numFmt=h.fmt||FC;c.alignment={horizontal:'right'};c.fill=solid(T?'FFE0E7FF':tint(h.hex||'FFFFFF',ri%2?0.82:0.9));if(T)c.font={bold:true}}});r++});
+ const ad=(a,b)=>ws.getCell(a,b).address;
+ if(o.heat)ws.addConditionalFormatting({ref:ad(hr+1,o.heat[0])+':'+ad(hr+rows.length,o.heat[1]),rules:[{type:'colorScale',cfvo:[{type:'min'},{type:'max'}],color:[{argb:'FFFFFFFF'},{argb:'FF818CF8'}]}]});
+ if(o.chg){const tl=ad(hr+1,o.chg.c1),g=o.chg.bad?'FFDC2626':'FF16A34A',b=o.chg.bad?'FF16A34A':'FFDC2626';
+  ws.addConditionalFormatting({ref:tl+':'+ad(hr+all.length,o.chg.c2),rules:[{type:'expression',formulae:['AND(ISNUMBER('+tl+'),'+tl+'>0)'],style:{font:{bold:true,color:{argb:g}}}},{type:'expression',formulae:['AND(ISNUMBER('+tl+'),'+tl+'<0)'],style:{font:{bold:true,color:{argb:b}}}}]})}
+ return r+2}
+function xFlat(ws,title,heads,rows,bandFn,fm){xTitle(ws,1,title,heads.length);xHead(ws,3,heads.map(t=>({t,hex:'A5B4FC'})));let g=-1,prev=null;
+ rows.forEach((row,ri)=>{const k=bandFn(row),first=k!==prev;if(first){g++;prev=k}row.forEach((v,i)=>{const c=ws.getCell(4+ri,i+1);c.value=v;c.fill=solid(g%2?'FFFFFFFF':'FFEEF2FF');
+  c.border=first?{...BR,top:{style:'medium',color:{argb:'FF6366F1'}}}:BR;if(fm[i]){c.numFmt=fm[i];c.alignment={horizontal:'right'};c.font={bold:i===3}}else c.alignment={horizontal:'left',indent:1}})});
+ ws.autoFilter={from:{row:3,column:1},to:{row:3+Math.max(rows.length,1),column:heads.length}};ws.views=[{state:'frozen',ySplit:3,showGridLines:false}]}
+function xCmp(ws,idx,kf,keys,lab,first,mets,title){let r=1;const hasT=idx[0]===0,ch=hasT?idx.slice(1):[];
+ const G=idx.map(i=>({g:g2(D.R[i]||[],D.O[i]||[],kf),hr:!!D.R[i],ho:!!D.O[i],i}));
+ mets.forEach(m=>{if(!G.some(x=>m[4]==='R'?x.hr:m[4]==='O'?x.ho:x.hr&&x.ho))return;
+  const f=a=>a==null?'-':m[3]?a/100:a,chv=(a,b)=>a==null||b==null?'-':m[3]?a-b:(b?(a-b)/b:(a?'new':0));
+  const rows=keys.map(k=>{const v=G.map(x=>{const g=x.g.get(k)||{r:[],o:[]};return val(m,S(g.r,g.o),x.hr,x.ho)});return[lab(k),...v.map(f),...ch.map(i=>chv(v[0],v[idx.indexOf(i)]))]});
+  const tv=G.map(x=>val(m,S(D.R[x.i]||[],D.O[x.i]||[]),x.hr,x.ho)),tot=['Total',...tv.map(f),...ch.map(i=>chv(tv[0],tv[idx.indexOf(i)]))];
+  const heads=[{t:first},...idx.map(i=>({t:LD(i),hex:HX[m[0]],fmt:m[3]?FP:FC})),...ch.map(i=>({t:'Today vs '+DN[i],hex:'E2E8F0',fmt:m[3]?PPF:PCF}))];
+  r=xBlock(ws,r,m[1]+' — '+title,heads,rows,{tot,chg:ch.length?{c1:idx.length+2,c2:heads.length,bad:['bl','blp','pe','ot','oo'].includes(m[0])}:null})})}
+function buildWB(){const wb=new ExcelJS.Workbook();wb.creator='GD Analysis Dashboard';
+ const ds=[0,1,2].filter(i=>D.R[i]||D.O[i]),hasCity=!!(MAP.O&&MAP.O.city>=0),hasSt=!!(MAP.O&&MAP.O.ps>=0&&MAP.O.cs>=0),hasPl=!!(MAP.O&&MAP.O.pl>=0);
+ const sheet=(n,t)=>wb.addWorksheet(n,{properties:{tabColor:{argb:t}},views:[{state:'frozen',xSplit:1,showGridLines:false}]});
+ const wid=(ws,a,b,n)=>{ws.getColumn(1).width=a;for(let c=2;c<=n;c++)ws.getColumn(c).width=b};
+ const mh=m=>({t:m[1],hex:HX[m[0]],fmt:m[3]?FP:FC}),cv=(m,s,hr,ho)=>{const v=val(m,s,hr,ho);return v==null?'-':m[3]?v/100:v};
+ const D1=i=>({rs:D.R[i]||[],os:D.O[i]||[],hr:!!D.R[i],ho:!!D.O[i]}),MI=ids=>ids.map(k=>MET.find(m=>m[0]===k));
+ {const ws=sheet('Main Analysis','FF4F46E5');let r=1;ds.forEach(i=>{const x=D1(i),g=g2(x.rs,x.os,z=>z.h);
+  r=xBlock(ws,r,'⭐ Main Analysis (hour-wise) — '+LD(i),[{t:'Hour'},...MET.map(mh)],HRS.map(h=>{const q=g.get(h)||{r:[],o:[]},s=S(q.r,q.o);return[h,...MET.map(m=>cv(m,s,x.hr,x.ho))]}),{tot:['Total',...MET.map(m=>cv(m,S(x.rs,x.os),x.hr,x.ho))]})});wid(ws,16,15,MET.length+1)}
+ if(ds.some(i=>D.R[i])){const ws=sheet('ROAV Hour & City','FF2563EB'),M=MI(MR);let r=1;
+  ds.filter(i=>D.R[i]).forEach(i=>{const rs=D.R[i],gh=grp(rs,z=>z.h),gc=grp(rs,z=>z.c),row=(l,a)=>{const s=S(a,[]);return[l,...M.map(m=>cv(m,s,true,false))]},hd=[{t:'Hour'},...M.map(mh)];
+   r=xBlock(ws,r,'📊 ROAV hour-wise — '+LD(i),hd,HRS.map(h=>row(h,gh.get(h)||[])),{tot:row('Total',rs)});
+   r=xBlock(ws,r,'🏙 ROAV city-wise — '+LD(i),[{t:'City'},...hd.slice(1)],[...gc].sort((a,b)=>b[1].length-a[1].length).map(([c,a])=>row(CN.get(c),a)),{tot:row('Total',rs)})});wid(ws,26,15,M.length+1)}
+ ds.forEach(i=>{const x=D1(i),mets=MI([...(x.hr?MR.filter(k=>k!=='ot'):[]),...(x.ho&&hasCity?['o','pe','bk']:[])]);if(!mets.length)return;
+  const ws=sheet('City x Hour - '+DN[i],'FF0D9488'),gc=g2(x.rs,x.os,z=>z.c),cs=[...gc.keys()].sort((a,b)=>{const A=gc.get(a),B=gc.get(b);return B.r.length-A.r.length||B.o.length-A.o.length||CN.get(a).localeCompare(CN.get(b))});
+  const cell=cs.map(c=>{const q=gc.get(c),gh=g2(q.r,q.o,z=>z.h);return HRS.map(h=>{const e=gh.get(h)||{r:[],o:[]};return S(e.r,e.o)})}),tot=cs.map(c=>S(gc.get(c).r,gc.get(c).o)),colT=HRS.map(h=>S(x.rs.filter(z=>z.h===h),x.os.filter(z=>z.h===h))),all=S(x.rs,x.os);let r=1;
+  mets.forEach(m=>{const f=s=>{const v=val(m,s,x.hr,x.ho);return v==null?'':m[3]?v/100:v},heads=[{t:'City ↓  /  Hour →'},...HRS.map(h=>({t:h,fmt:m[3]?FP:FZ})),{t:'Total',hex:'C7D2FE',fmt:m[3]?FP:FC}];
+   r=xBlock(ws,r,m[1]+' — City × Hour — '+LD(i),heads,cs.map((c,ci)=>[CN.get(c),...cell[ci].map(f),f(tot[ci])]),{tot:['Total',...colT.map(f),f(all)],heat:[2,25]})});wid(ws,26,8.5,26)});
+ if(ds.some(i=>D.O[i])){const ws=sheet('Orders by Hour','FF7C3AED'),M=MI(['o','pe','bk','oo','obk']);let r=1;
+  ds.filter(i=>D.O[i]).forEach(i=>{const os=D.O[i],gh=grp(os,z=>z.h),row=(l,a)=>{const s=S([],a);return[l,...M.map(m=>cv(m,s,false,true))]};
+   r=xBlock(ws,r,'📦 Orders by hour (Pending vs Booked) — '+LD(i),[{t:'Hour'},...M.map(mh)],HRS.map(h=>row(h,gh.get(h)||[])),{tot:row('Total',os)})});wid(ws,16,16,M.length+1)}
+ if(ds.length>=2){const wh=sheet('Compare Hour','FFEA580C');xCmp(wh,ds,z=>z.h,HRS,h=>h,'Hour',MET,'hour-wise comparison');wid(wh,16,19,ds.length*2+1);
+  const cnt=new Map(),i0=ds[0];(D.R[i0]||[]).forEach(z=>cnt.set(z.c,(cnt.get(z.c)||0)+1));(D.O[i0]||[]).forEach(z=>{if(!D.R[i0])cnt.set(z.c,(cnt.get(z.c)||0)+1)});
+  const ck=new Set();ds.forEach(i=>{(D.R[i]||[]).forEach(z=>ck.add(z.c));if(hasCity)(D.O[i]||[]).forEach(z=>ck.add(z.c))});
+  const keys=[...ck].sort((a,b)=>(cnt.get(b)||0)-(cnt.get(a)||0)||CN.get(a).localeCompare(CN.get(b))),wc=sheet('Compare City','FFD97706');
+  xCmp(wc,ds,z=>z.c,keys,c=>CN.get(c),'City',MET.filter(m=>m[4]==='R'||hasCity),'city-wise comparison');wid(wc,26,19,ds.length*2+1)}
+ const SM=i=>{const pm=new Map();D.O[i].forEach(z=>{const r=pm.get(z.ps)||pm.set(z.ps,new Map()).get(z.ps),q=r.get(z.cs)||r.set(z.cs,{o:0,bk:0,pe:0}).get(z.cs);q.o++;if(z.k==='bk')q.bk++;else if(z.k==='pe')q.pe++});return pm};
+ const sum=r=>[...r.values()].reduce((a,q)=>({o:a.o+q.o,bk:a.bk+q.bk,pe:a.pe+q.pe}),{o:0,bk:0,pe:0}),oi=ds.filter(i=>D.O[i]);
+ if(hasSt&&oi.length){const rows=[],sr=[];
+  oi.forEach(i=>{const pm=SM(i),tb=[...pm.values()].reduce((a,r)=>a+sum(r).bk,0);[...pm].sort((a,b)=>sum(b[1]).bk-sum(a[1]).bk||sum(b[1]).o-sum(a[1]).o).forEach(([p,r])=>{const t=sum(r);sr.push([LD(i),p,t.bk,t.o,t.pe,tb?t.bk/tb:0]);[...r].sort((a,b)=>b[1].bk-a[1].bk||b[1].o-a[1].o).forEach(([c,q])=>rows.push([LD(i),p,c,q.bk,q.o,q.pe]))})});
+  const w1=wb.addWorksheet('State Table',{properties:{tabColor:{argb:'FF16A34A'}}});xFlat(w1,'🗺 Product State (where booked) × Customer State — families booked',['Day','Product State','Customer State','Booked Count','All Orders','Pending'],rows,r=>r[0]+'|'+r[1],[0,0,0,FC,FC,FC]);[24,22,22,15,13,12].forEach((w,i)=>w1.getColumn(i+1).width=w);
+  const w2=wb.addWorksheet('State Summary',{properties:{tabColor:{argb:'FF65A30D'}}});xFlat(w2,'📍 Booked per Product State',['Day','Product State','Booked','All Orders','Pending','Share of booked'],sr,r=>r[0],[0,0,FC,FC,FC,FP]);[24,22,13,13,12,16].forEach((w,i)=>w2.getColumn(i+1).width=w);
+  const w3=sheet('State Matrix','FF0891B2');let r=1;oi.forEach(i=>{const pm=SM(i),ct=new Map();pm.forEach(m=>m.forEach((q,c)=>ct.set(c,(ct.get(c)||0)+q.bk)));const cols=[...ct.keys()].sort((a,b)=>ct.get(b)-ct.get(a)),gt=[...ct.values()].reduce((a,b)=>a+b,0);
+   r=xBlock(w3,r,'Booked families — Product State ↓ / Customer State → — '+LD(i),[{t:'Product State'},...cols.map(c=>({t:c,fmt:FZ})),{t:'Total',hex:'C7D2FE'}],[...pm].sort((a,b)=>sum(b[1]).bk-sum(a[1]).bk).map(([p,m])=>[p,...cols.map(c=>(m.get(c)||{bk:0}).bk),sum(m).bk]),{tot:['Total',...cols.map(c=>ct.get(c)),gt],heat:[2,cols.length+1]})});wid(w3,24,13,40)}
+ if(hasPl&&oi.length){const rows=[];oi.forEach(i=>{const os=D.O[i];[...grp(os,z=>z.pl)].sort((a,b)=>b[1].length-a[1].length).forEach(([p,a])=>{const s=S([],a);rows.push([LD(i),p,s.o,s.bk,s.pe,os.length?s.o/os.length:0])})});
+  const w=wb.addWorksheet('Platform',{properties:{tabColor:{argb:'FFDB2777'}}});xFlat(w,'📱 Orders by platform',['Day','Platform','Orders','Booked','Pending','Share of orders'],rows,r=>r[0],[0,0,FC,FC,FC,FP]);[24,22,13,13,12,16].forEach((x,i)=>w.getColumn(i+1).width=x)}
+ {const rows=[];ds.forEach(i=>{const x=D1(i);g2(x.rs,x.os,z=>z.c).forEach((g,ck)=>g2(g.r,g.o,z=>z.h).forEach((q,h)=>{const s=S(q.r,q.o);rows.push([DN[i],lb(i),CN.get(ck),h,...['r','abd','opt','bl','bn','ot','o','pe','bk','oo'].map(k=>(k in {r:1,abd:1,opt:1,bl:1,bn:1,ot:1}?x.hr:x.ho)?s[k]:null)])}))});
+  if(rows.length){const w=wb.addWorksheet('Data (for slicers)',{properties:{tabColor:{argb:'FF64748B'}}});w.addTable({name:'Data_CityHour',ref:'A1',headerRow:true,style:{theme:'TableStyleMedium2',showRowStripes:true},columns:['Day','Date','City','Hour','ROAV','ABD','OPT','Blocking+NoInv','Book Now','Other reason','Orders','Pending','Booked','Other status'].map(name=>({name,filterButton:true})),rows});
+   [10,12,22,7,9,9,9,15,10,12,9,9,9,12].forEach((x,i)=>w.getColumn(i+1).width=x);w.views=[{state:'frozen',ySplit:1}]}}
+ return wb}
+async function exp(){if(typeof ExcelJS==='undefined'){alert('Excel library did not load (needs internet once). Connect and reload this page.');return}
+ if(![0,1,2].some(i=>D.R[i]||D.O[i])){alert('Load a CSV first.');return}
+ try{const buf=await buildWB().xlsx.writeBuffer(),a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+  const d=[0,1,2].find(i=>D.R[i]||D.O[i]);a.download='GD_Analysis_'+(lb(d)||'export').replace(/[^0-9A-Za-z-]/g,'_')+'.xlsx';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},2000)}catch(e){alert('Export failed: '+e.message)}}
+
+/* ===== events ===== */
+document.addEventListener('change',e=>{const t=e.target,d=t.dataset;
+ if(t.type==='file'){const f=t.files[0];if(!f)return;const k=d.k,i=+d.i,s=$('st'+k+i);s.textContent='Reading…';
+  rd(f,raw=>{F[k][i]=raw;s.innerHTML='<span class="ok">✔ '+esc(raw.name)+'</span> — '+fmt(raw.rows.length)+' rows';if(!MH[k]){MH[k]=raw.hd;MAP[k]=auto(k,raw.hd);drawMaps()}proc()},m=>s.innerHTML='<span class="bad">✖ '+esc(m)+'</span>')}
+ else if(d.ds!==undefined){DSEL[d.ds]=t.value;proc()}
+ else if(d.m!==undefined){MAP[d.k][d.m]=+t.value;proc()}
+ else if(d.c){V[d.c]=t.value;render()}
+ else if(t.id==='dsel'){day=+t.value;render()}
+ else if(t.id==='dd')proc();
+ else if(t.id==='cl'){const s=[...t.selectedOptions].map(o=>o.value);CS=new Set([...CS].filter(k=>!VIS.includes(k)).concat(s));cnt();render()}});
+$('cs').oninput=drawCities;
+$('ca').onclick=()=>{VIS.forEach(k=>CS.add(k));drawCities();render()};
+$('cx').onclick=()=>{CS.clear();drawCities();render()};
+$('tabs').onclick=e=>{const b=e.target.closest('button[data-t]');if(b){cur=+b.dataset.t;render()}};
+$('ex').onclick=exp;
+drawDay();drawCities();render();
+</script></body></html>
